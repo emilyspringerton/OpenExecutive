@@ -57,6 +57,65 @@ _DEFAULT_MAX_OUTPUT_TOKENS = 2048
 _DEFAULT_TEMPERATURE = 1.0
 
 
+def _sanitize_schema_for_gemini(node: Any) -> Any:
+    """Recursively rewrite a JSON-Schema fragment so it survives both
+    ``genai_types.Schema`` VALIDATION and Gemini's own wire-format
+    SERIALIZATION intact.
+
+    Real bug #1, found live (2026-09-21) running an actual chat turn end to
+    end through a real specialist tool schema, not a hand-picked test
+    fixture: Pydantic v2's default JSON-Schema output for an
+    ``Optional[int]`` field is ``{"type": ["integer", "null"]}`` (the
+    standard JSON-Schema-2020-12 / OpenAPI-3.1 nullable-union form) —
+    Gemini's ``Schema`` has no concept of a type LIST at all, only a single
+    ``type`` plus a separate ``nullable: bool`` flag, and raises a real
+    ``pydantic_core.ValidationError`` on the list form.
+
+    Real bug #2, found live the same way, one layer deeper (only visible
+    once bug #1 stopped masking it): a schema carrying JSON-Schema's
+    ``additionalProperties`` keyword validates fine into ``Schema`` (a real
+    field, ``additional_properties``, alias ``additionalProperties``) but
+    then fails at the ACTUAL API call with a real ``400 INVALID_ARGUMENT``
+    ("Unknown name \"additional_properties\"") — confirmed directly against
+    the installed SDK: ``Schema(...).model_dump()`` emits the Python field
+    name (``additional_properties``), not the JSON alias, and that's what
+    reaches the wire. Not something this codebase can fix inside the SDK, so
+    the field is dropped before construction instead — a validation-only
+    JSON-Schema keyword Gemini's own function-calling has no real use for
+    anyway (this is model-generated tool-call input, not adversarial data
+    needing "reject unknown extra fields" strictness).
+
+    Neither was caught by the existing test suite: it only ever exercised
+    simple, single-type, no-``additionalProperties`` schemas.
+    """
+    _DROP_KEYS = ("additionalProperties", "additional_properties")
+    if isinstance(node, dict):
+        out = {
+            k: _sanitize_schema_for_gemini(v)
+            for k, v in node.items()
+            if k not in _DROP_KEYS
+        }
+        t = out.get("type")
+        if isinstance(t, list):
+            non_null = [x for x in t if x != "null"]
+            if len(non_null) == 1 and "null" in t:
+                out["type"] = non_null[0]
+                out["nullable"] = True
+            elif non_null:
+                # A genuine multi-type union (rare for a tool parameter) —
+                # Gemini has no equivalent; take the first real type rather
+                # than crash. Not exercised by any known real tool schema
+                # today, so no regression test claims this is the "right"
+                # choice, only that it degrades instead of raising.
+                out["type"] = non_null[0]
+                if "null" in t:
+                    out["nullable"] = True
+        return out
+    if isinstance(node, list):
+        return [_sanitize_schema_for_gemini(v) for v in node]
+    return node
+
+
 def _translate_tools(tools: list[Any] | None) -> list[genai_types.Tool] | None:
     """Anthropic ``tools[]`` (flat ``{name, description, input_schema}``, no
     ``type``/``function`` wrapper) -> a single Gemini ``Tool`` carrying one
@@ -76,7 +135,9 @@ def _translate_tools(tools: list[Any] | None) -> list[genai_types.Tool] | None:
             continue
         if "input_schema" not in t and (t.get("type") or "").startswith(_SERVER_TOOL_PREFIXES):
             continue
-        params = t.get("input_schema") or {"type": "object", "properties": {}}
+        params = _sanitize_schema_for_gemini(
+            t.get("input_schema") or {"type": "object", "properties": {}}
+        )
         declarations.append(
             genai_types.FunctionDeclaration(
                 name=t.get("name", ""),

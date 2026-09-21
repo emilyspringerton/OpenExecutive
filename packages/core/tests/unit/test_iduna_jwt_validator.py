@@ -270,3 +270,35 @@ async def test_cooldown_short_circuit_still_fails_closed_past_staleness_ceiling(
         # because a fresh attempt was rate-limited.
         with pytest.raises(ConnectionError):
             await cache.fetch()
+
+
+@pytest.mark.asyncio
+async def test_fetch_failure_with_an_awkward_constructor_reraises_usefully() -> None:
+    """Real bug, found live (2026-09-21): a real IDUNA boot attempt failed
+    with "IDUNA token validation failed: HTTPStatusError.__init__() missing
+    2 required keyword-only arguments: 'request' and 'response'" -- the
+    fetch() error handler's own `type(e)(str(e))` "fresh object" trick
+    assumed every exception class accepts a single positional string
+    constructor. httpx.HTTPStatusError (exactly what raise_for_status()
+    raises on a real 404/500) does not -- it requires keyword-only
+    `request`/`response`. That crashed with a SECOND, unrelated TypeError
+    that masked the real underlying error. Uses a REAL httpx.HTTPStatusError
+    (via a real httpx.Response.raise_for_status(), not a hand-rolled stand-in)
+    -- this is exactly the level a simplified fake would have hidden the bug
+    at."""
+    import httpx
+
+    cache = JWKSCache("http://localhost:8080")
+
+    async def failing_get(url):
+        request = httpx.Request("GET", url)
+        response = httpx.Response(404, request=request, text="not found")
+        response.raise_for_status()  # raises the real httpx.HTTPStatusError
+
+    with patch.object(cache._client, "get", side_effect=failing_get), pytest.raises(Exception) as exc_info:
+        await cache.fetch()
+    # The exact type doesn't survive HTTPStatusError's awkward constructor
+    # (falls back to RuntimeError, by design) -- what matters is that fetch()
+    # itself doesn't crash with an unrelated TypeError, and the real 404 is
+    # still visible in the message.
+    assert "404" in str(exc_info.value)

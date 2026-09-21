@@ -185,13 +185,33 @@ class JWKSCache:
                 logger.info(f"Fetched JWKS from {jwks_url}")
                 return self._cache
             except Exception as e:
-                # Store type+message, not the exception object itself:
+                # Store a fresh exception, not the exception object itself:
                 # re-raising the SAME object on every subsequent cooldown
                 # short-circuit appends a frame to its __traceback__ each
                 # time (found in review — unbounded growth under a
-                # sustained outage). A fresh, equivalent exception is raised
-                # from this instead.
-                self._last_error = type(e)(str(e))
+                # sustained outage). Preserving the original TYPE (not just
+                # the message) is deliberate and tested — a caller
+                # distinguishing e.g. ConnectionError from TimeoutError
+                # should still be able to after this rewrap.
+                #
+                # CORRECTED (2026-09-21, real live boot found this):
+                # `type(e)(str(e))` assumes every exception class accepts a
+                # single positional string — false for
+                # `httpx.HTTPStatusError` (requires keyword-only `request`/
+                # `response`), which is exactly what `raise_for_status()`
+                # raises. That assumption crashed with a SECOND, unrelated
+                # TypeError ("HTTPStatusError.__init__() missing 2 required
+                # keyword-only arguments") that masked the real underlying
+                # error (a 404 on IDUNA's own JWKS endpoint) behind a
+                # useless one. Fix: try the type-preserving reconstruction;
+                # fall back to a generic RuntimeError (with the original
+                # type name folded into the message, so nothing is lost)
+                # only for the exception classes that can't be rebuilt this
+                # way, instead of assuming every class can.
+                try:
+                    self._last_error = type(e)(str(e))
+                except Exception:
+                    self._last_error = RuntimeError(f"{type(e).__name__}: {e}")
                 if self._within_stale_ceiling():
                     # A transient IDUNA outage should not lock out every
                     # caller holding an otherwise-valid token — serve the

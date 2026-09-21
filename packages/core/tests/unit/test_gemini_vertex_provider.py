@@ -54,6 +54,93 @@ def test_translate_tools_empty_or_none_returns_none() -> None:
     assert _translate_tools([]) is None
 
 
+def test_translate_tools_handles_pydantic_style_nullable_type_list() -> None:
+    """Real bug, found live (2026-09-21) running an actual chat turn end to
+    end: a real specialist tool's input_schema with an Optional[int] field
+    (Pydantic v2's default JSON-Schema output: {"type": ["integer",
+    "null"]}) crashed FunctionDeclaration construction with a real
+    pydantic_core.ValidationError -- Gemini's own Schema.type is a single
+    enum, never a list. Every existing test used a simple, single-type
+    schema and never caught this."""
+    tools = [
+        {
+            "name": "archive_person",
+            "description": "desc",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "person_id": {"type": ["integer", "null"], "description": "nullable id"},
+                    "name": {"type": "string"},
+                },
+            },
+        }
+    ]
+    result = _translate_tools(tools)
+    assert result is not None
+    decl = result[0].function_declarations[0]
+    assert decl.name == "archive_person"
+    props = decl.parameters.properties
+    assert props["person_id"].type == genai_types.Type.INTEGER
+    assert props["person_id"].nullable is True
+    assert props["name"].type == genai_types.Type.STRING
+    assert props["name"].nullable is not True
+
+
+def test_translate_tools_drops_additional_properties() -> None:
+    """Real bug, found live (2026-09-21) one layer deeper than the nullable
+    fix, only visible once that one stopped masking it: `additionalProperties`
+    validates fine into a real Schema object, but the installed SDK's own
+    Schema.model_dump() emits the Python field name (additional_properties)
+    rather than the JSON alias when building the actual outgoing request --
+    confirmed directly against the SDK -- which Gemini's real API rejects
+    with a genuine 400 INVALID_ARGUMENT ("Unknown name
+    \"additional_properties\""). Dropped rather than fixed inside the SDK."""
+    tools = [
+        {
+            "name": "strict_tool",
+            "description": "desc",
+            "input_schema": {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        }
+    ]
+    result = _translate_tools(tools)
+    assert result is not None
+    parameters = result[0].function_declarations[0].parameters
+    dumped = parameters.model_dump(exclude_none=True)
+    assert "additional_properties" not in dumped
+    assert "additionalProperties" not in dumped
+
+
+def test_translate_tools_handles_nested_nullable_type_in_array_items() -> None:
+    """The sanitizer must recurse into `items` (array element schemas), not
+    just top-level `properties` -- a real, plausible shape for a
+    Optional[list[Optional[int]]]-style field, even if no current tool
+    happens to use one yet."""
+    tools = [
+        {
+            "name": "bulk_op",
+            "description": "desc",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "ids": {
+                        "type": "array",
+                        "items": {"type": ["integer", "null"]},
+                    },
+                },
+            },
+        }
+    ]
+    result = _translate_tools(tools)
+    assert result is not None
+    items_schema = result[0].function_declarations[0].parameters.properties["ids"].items
+    assert items_schema.type == genai_types.Type.INTEGER
+    assert items_schema.nullable is True
+
+
 def test_extract_system_text_joins_real_multi_block_shape() -> None:
     real_system = [
         {"type": "text", "text": "You are the Executive.", "cache_control": {"type": "ephemeral"}},
