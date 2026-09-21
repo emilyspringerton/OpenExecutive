@@ -349,11 +349,12 @@ the app refuses to start.
 | `LOCAL_API_KEY` | No | — | Optional bearer token (vLLM / gateways); Ollama & LM Studio need none |
 | `LOCAL_MODELS` | No | — | Comma-separated local model slugs to surface in the Council UI and route locally, e.g. `llama3.3,qwen2.5` |
 | `LOCAL_TIMEOUT_S` | No | `300` | Per-call timeout for local generation, in seconds |
-| `GEMINI_ENABLED` | No | `false` | Route Claude calls to Google Gemini via Vertex AI (native `google.genai` path, not OpenRouter's Gemini catalog entries). Uses Application Default Credentials — no API key setting |
-| `GCP_PROJECT_ID` | No | — | Required when `GEMINI_ENABLED=true` |
-| `GCP_LOCATION` | No | `us-central1` | Vertex AI region |
-| `GEMINI_DEFAULT_MODEL` | No | `gemini-2.5-pro` | Model surfaced in the Council UI when Gemini is enabled |
-| `GEMINI_REASONING_MODEL` | No | `gemini-2.5-pro` | Deep-reasoning-tier Gemini model |
+| `GEMINI_ENABLED` | No | `false` | Route Claude calls to Google Gemini (native `google.genai` path, not OpenRouter's Gemini catalog entries). Two independent credential modes — set exactly one: `GEMINI_API_KEY` (Gemini Developer API, no GCP Console work needed) or `GCP_PROJECT_ID` (Vertex AI via Application Default Credentials) |
+| `GEMINI_API_KEY` | No | — | Gemini Developer API key (`generativelanguage.googleapis.com`). Takes priority over `GCP_PROJECT_ID` if both are set |
+| `GCP_PROJECT_ID` | No | — | Vertex AI mode: a real GCP project with Vertex AI enabled + billing on |
+| `GCP_LOCATION` | No | `us-central1` | Vertex AI region (Vertex mode only) |
+| `GEMINI_DEFAULT_MODEL` | No | `gemini-3.1-pro-preview` | Model surfaced in the Council UI when Gemini is enabled |
+| `GEMINI_REASONING_MODEL` | No | `gemini-3.1-pro-preview` | Deep-reasoning-tier Gemini model |
 | `IDUNA_URL` | No | — | EINHORN_INDUSTRIAL IDUNA base URL (`https://` required unless the host is loopback). When set, an IDUNA-issued JWT (`Authorization: Bearer`, ES256/EC, verified against `<IDUNA_URL>/.well-known/jwks.json`) is accepted as an alternative credential on the same gate `BACKEND_SHARED_SECRET` guards — either one alone satisfies it, so a deployment can run on IDUNA alone with no shared secret set |
 | `IDUNA_EXPECTED_AUDIENCE` | No | `farthq-ecosystem` | Required token `aud` claim — defense in depth, not the primary authorization control (see next row) |
 | `IDUNA_REQUIRED_PERMISSION_PREFIX` | No | `openexec.` | The real, load-bearing check: a valid IDUNA signature alone is not sufficient (IDUNA's shared key also signs low-trust principals like public guest game accounts), so a token must also carry a permission with this prefix. All-or-nothing today — `openexec.read` and `openexec.admin` are currently equivalent for this service |

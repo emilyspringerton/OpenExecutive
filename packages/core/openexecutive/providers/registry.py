@@ -383,17 +383,19 @@ def _gemini() -> GeminiVertexProvider:
     if _gemini_provider is None:
         settings = get_settings()
         project_id = getattr(settings, "gcp_project_id", None)
-        if not project_id:
+        api_key = getattr(settings, "gemini_api_key", None)
+        if not project_id and not api_key:
             # The Settings model_validator already prevents GEMINI_ENABLED
-            # without a project id, but defense in depth, matching every
+            # without one of these, but defense in depth, matching every
             # other provider constructor in this module.
             raise HTTPException(
                 status_code=400,
-                detail="Gemini routing requires GCP_PROJECT_ID",
+                detail="Gemini routing requires GCP_PROJECT_ID or GEMINI_API_KEY",
             )
         _gemini_provider = GeminiVertexProvider(
             project_id=project_id,
             location=getattr(settings, "gcp_location", "us-central1"),
+            api_key=api_key,
         )
     return _gemini_provider
 

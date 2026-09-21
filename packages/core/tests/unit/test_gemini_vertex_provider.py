@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from google.genai import types as genai_types
 
 from openexecutive.providers.gemini_vertex_provider import (
@@ -265,6 +266,25 @@ def test_provider_construction_needs_no_live_credentials() -> None:
     # eagerly resolved the project at construction time.
     provider = GeminiVertexProvider(project_id="fake-project", location="us-central1")
     assert provider.project_id == "fake-project"
+    assert provider.uses_api_key is False
+
+
+def test_provider_construction_with_api_key_needs_no_gcp_project() -> None:
+    # The Gemini Developer API mode (generativelanguage.googleapis.com) --
+    # a plain key, no Vertex AI / ADC / GCP project needed at all.
+    provider = GeminiVertexProvider(api_key="fake-key-not-a-real-secret")
+    assert provider.uses_api_key is True
+    assert provider.project_id is None
+
+
+def test_provider_construction_prefers_api_key_over_project_id_when_both_set() -> None:
+    provider = GeminiVertexProvider(project_id="fake-project", api_key="fake-key")
+    assert provider.uses_api_key is True
+
+
+def test_provider_construction_raises_without_either_credential() -> None:
+    with pytest.raises(ValueError, match="api_key.*project_id|project_id.*api_key"):
+        GeminiVertexProvider()
 
 
 def test_fake_stream_iterates_and_returns_final_message() -> None:

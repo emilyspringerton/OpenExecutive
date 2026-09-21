@@ -276,5 +276,32 @@ what is a narrow, internal auth mechanism, not a user-facing feature domain); Co
 Call-style automatic Anthropic-Gemini fallback (open decision #13 above, unchanged); the stray
 `iduna.db` cleanup and upstream-tracking decision (Phase D, unchanged); real eval scenarios per
 this repo's own PR bar (none added — no new specialist agent or prompt changed, so the existing
-gate doesn't require them, but a live end-to-end boot test against real GCP/IDUNA credentials still
-hasn't happened in this sandbox, which has neither).
+gate doesn't require them).
+
+## 7. "Is it ready?" — found a real credential, ran it live (2026-09-21)
+
+Founder pushed back on §6's own "this sandbox has neither [GCP nor IDUNA credentials]" claim,
+correctly: EINHORN_INDUSTRIAL already had a live, working Gemini Developer API key
+(`EMILY/var/gemini-api-key.env`, project `einhorn-mjolnir`) sitting in this monorepo's own
+established interim-secrets convention — a check I skipped, having only tried `gcloud auth
+login`/ADC. Real correction, not just a doc fix:
+
+- `GeminiVertexProvider` now supports the Gemini Developer API (`api_key=`, `generativelanguage.
+  googleapis.com`) as a real alternative to Vertex AI (`project_id=`, ADC) — `google.genai.Client`
+  supports both natively, verified against the real installed SDK's own constructor signature.
+  `api_key` takes priority when both are set. `config.py`'s `_validate_gemini` now accepts either.
+- **Ran the actual provider code against the real key**, not just curl: `GeminiVertexProvider(
+  api_key=...).messages_create(...)` returns the exact same `402 RESOURCE_EXHAUSTED` (billing
+  credits depleted) a raw `curl` to the same endpoint returns — proof the real request
+  construction and auth wiring are correct, not just that the key itself is valid. The stale
+  default model name this surfaced (`gemini-2.5-pro`, "no longer available to new users" per
+  Google's own error) is fixed to `gemini-3.1-pro-preview` everywhere it was hardcoded.
+- **Corrected scope of "ready"**: the real remaining blocker is billing credits on an *existing*
+  key (a small, human-only top-up at ai.studio/projects), not "provision a whole new GCP project
+  with Vertex AI enabled" — §6's framing overstated the gap.
+- 3 new tests (api_key-only construction, api_key-takes-priority, raises with neither credential);
+  all 22 provider tests + the full unit suite green; ruff/mypy clean.
+- Still real, still not done: an actual successful (non-billing-blocked) completion has never been
+  observed — that needs the human step above. IDUNA's own side of a live end-to-end boot test also
+  hasn't happened (needs a real IDUNA instance + a provisioned credential — see IDUNA's new
+  `/admin/openexecutive` Back Office page, built the same session, for that half).

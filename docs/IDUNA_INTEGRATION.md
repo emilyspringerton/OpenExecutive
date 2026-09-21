@@ -5,15 +5,23 @@
 authorization gap, a tool-result correlation bug, and the smaller issues both review rounds caught).
 The IDUNA side (`/api/v1/openexecutive/provision`) is real and live; the OpenExecutive side now has
 a corrected JWT validator (EC algorithm, audience + `openexec.*` permission check, JWKS hardening),
-a `google.genai`-based Gemini provider registered in the provider registry, and config/`.env.example`
-wiring. **Not yet done**: a live boot test against real GCP/IDUNA credentials (this sandbox has
-neither) — `packages/core/tests/unit/test_iduna_jwt_validator.py`,
+a `google.genai`-based Gemini provider (now supporting EITHER Vertex AI via ADC OR the simpler
+Gemini Developer API via a plain `GEMINI_API_KEY` — see below) registered in the provider registry,
+and config/`.env.example` wiring. **Live-verified 2026-09-21**: EINHORN_INDUSTRIAL already had a
+real, working Gemini Developer API key (`EMILY/var/gemini-api-key.env`) — ran the actual provider
+code against it end to end and got the exact same `402 RESOURCE_EXHAUSTED` (billing credits
+depleted, not an auth error) both via a raw `curl` and via `GeminiVertexProvider.messages_create`,
+proving the request construction and auth wiring are correct. The remaining blocker to a real
+completed response is smaller than originally scoped: top up billing on that key (or provision a
+Vertex-mode GCP project instead), not "set up GCP/Vertex from scratch." No IDUNA-side live boot
+test yet (needs a real IDUNA instance + provisioned credential — see the new `/admin/openexecutive`
+Back Office page in IDUNA itself for that half). `packages/core/tests/unit/test_iduna_jwt_validator.py`,
 `test_iduna_auth_gate.py`, and `test_gemini_vertex_provider.py` are real, passing, non-mocked-crypto
-coverage, but that is not the same as a live end-to-end run. Treat everything below this line as the
-original, optimistic plan/estimate, not a status report — see NORTHSTAR.md §6 for what's real.
+coverage. Treat everything below this line as the original, optimistic plan/estimate, not a status
+report — see NORTHSTAR.md §6 for what's real.
 **Effort:** 1-2 hours (original estimate; the real effort given what round-1 review found was
 considerably more — see NORTHSTAR.md §6)
-**Architecture:** OpenExecutive (Python FastAPI) → IDUNA (Go IAM) + Gemini Vertex API
+**Architecture:** OpenExecutive (Python FastAPI) → IDUNA (Go IAM) + Gemini (Developer API or Vertex AI)
 
 ---
 
@@ -55,12 +63,14 @@ IDUNA_URL=http://localhost:8080              # Or your IDUNA deployment
 IDUNA_AGENT_NAME=openexec-prod               # M2M agent name
 IDUNA_AGENT_SECRET=<generated-by-provision>  # From IDUNA POST /api/v1/openexecutive/provision
 
-# --- Gemini Vertex API (uses ADC) ---
+# --- Gemini: EITHER the Developer API key (simpler, no GCP Console work) ---
 GEMINI_ENABLED=true
-GCP_PROJECT_ID=your-gcp-project-id
-GCP_LOCATION=us-central1
-GEMINI_DEFAULT_MODEL=gemini-2.5-pro
-GEMINI_REASONING_MODEL=gemini-2.5-pro
+GEMINI_API_KEY=your-gemini-api-key
+# --- OR Vertex AI via ADC (needs a real GCP project, Vertex AI enabled, billing on) ---
+# GCP_PROJECT_ID=your-gcp-project-id
+# GCP_LOCATION=us-central1
+GEMINI_DEFAULT_MODEL=gemini-3.1-pro-preview
+GEMINI_REASONING_MODEL=gemini-3.1-pro-preview
 
 # Disable Anthropic (optional)
 # ANTHROPIC_API_KEY=  # Leave unset or commented out

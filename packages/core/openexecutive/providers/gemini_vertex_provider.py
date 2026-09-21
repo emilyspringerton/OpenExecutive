@@ -1,22 +1,27 @@
-"""Gemini (Vertex AI) provider adapter for OpenExecutive.
+"""Gemini provider adapter for OpenExecutive.
 
 Translates OpenExecutive's Anthropic-shaped API calls into Google Gen AI SDK
-calls against Vertex AI, and translates responses back to an Anthropic
-``Message``-shaped (duck-typed) object for compatibility — the same
-``types.SimpleNamespace`` pattern ``providers.translator.from_openai_response``
-already uses for the OpenRouter/local-model path.
+calls, and translates responses back to an Anthropic ``Message``-shaped
+(duck-typed) object for compatibility — the same ``types.SimpleNamespace``
+pattern ``providers.translator.from_openai_response`` already uses for the
+OpenRouter/local-model path.
 
 Deliberately built on ``google.genai`` (the unified Gen AI SDK), NOT
 ``vertexai.generative_models``: importing the latter emits ``UserWarning: This
 feature is deprecated as of June 24, 2025 and will be removed on June 24,
 2026`` (verified live against the installed ``google-cloud-aiplatform``
 2.1.3) — building new code against an SDK surface already past its own
-documented removal date would be wrong on day one. ``google.genai.Client(
-vertexai=True, ...)`` is the current, supported way to call Vertex AI's
-Gemini models.
+documented removal date would be wrong on day one.
 
-Uses Google Application Default Credentials (ADC) from the environment by
-default — no explicit API key configuration needed.
+Supports EITHER of ``google.genai.Client``'s two real backends — Vertex AI
+(``vertexai=True, project=, location=``, Application Default Credentials) or
+the Gemini Developer API (``api_key=``, ``generativelanguage.googleapis.com``,
+no GCP project/ADC/billing-console work beyond whatever created the key). See
+``GeminiVertexProvider``'s own docstring for when each applies; the class name
+predates the second mode's addition (S506, 2026-09-21 — this monorepo turned
+out to already have a live key of that kind sitting in its own established
+interim-secrets convention, not the Vertex-mode credential this file
+originally assumed was the only path) and is kept for import-path stability.
 """
 
 from __future__ import annotations
@@ -379,27 +384,57 @@ def _response_to_namespace(response: Any, model_name: str) -> SimpleNamespace:
 
 
 class GeminiVertexProvider:
-    """Adapter to use Gemini (via Vertex AI) as an ``LLMProvider``.
+    """Adapter to use Gemini as an ``LLMProvider``, via either of the two real
+    backends ``google.genai.Client`` supports:
 
-    Uses Google Application Default Credentials (ADC) automatically from the
-    environment (service account, ``gcloud auth application-default login``,
-    or the environment's own attached service account on GCP compute) — no
-    explicit key configuration needed.
+    - **Vertex AI** (``project_id`` set, no ``api_key``): Application Default
+      Credentials (ADC) from the environment (service account, ``gcloud auth
+      application-default login``, or an attached GCP compute service
+      account) — no explicit key configuration needed, but a real GCP project
+      with Vertex AI enabled and billing on is a real prerequisite.
+    - **Gemini Developer API** (``api_key`` set): a plain API key against
+      ``generativelanguage.googleapis.com`` — no GCP project/ADC/billing
+      console work needed beyond whatever created the key itself. This is
+      the simpler of the two and was added when this monorepo turned out to
+      already have a live key of this kind (see ``config.py``'s own
+      ``gemini_api_key`` field), not a Vertex-mode one — the class name
+      predates that discovery and is kept for import-path stability.
+
+    ``api_key`` takes priority when both are set — matches the real
+    ``google.genai.Client`` constructor's own mutually-exclusive shape
+    (passing both ``vertexai=True`` and ``api_key`` is not itself invalid,
+    but the API-key auth path is what actually gets used).
     """
 
-    def __init__(self, *, project_id: str, location: str = "us-central1") -> None:
+    def __init__(
+        self,
+        *,
+        project_id: str | None = None,
+        location: str = "us-central1",
+        api_key: str | None = None,
+    ) -> None:
         if not GENAI_AVAILABLE:
             raise RuntimeError(
                 "google-genai (with google-cloud-aiplatform) is required for "
-                "Gemini Vertex support. Install with: "
+                "Gemini support. Install with: "
                 "pip install google-genai google-cloud-aiplatform"
+            )
+        if not api_key and not project_id:
+            raise ValueError(
+                "GeminiVertexProvider requires either api_key (Gemini Developer "
+                "API) or project_id (Vertex AI via ADC)"
             )
         self.project_id = project_id
         self.location = location
-        self._client = genai.Client(vertexai=True, project=project_id, location=location)
-        logger.info(
-            f"GeminiVertexProvider initialized: project={project_id}, location={location}"
-        )
+        self.uses_api_key = api_key is not None
+        if api_key:
+            self._client = genai.Client(api_key=api_key)
+            logger.info("GeminiVertexProvider initialized: Gemini Developer API (api_key)")
+        else:
+            self._client = genai.Client(vertexai=True, project=project_id, location=location)
+            logger.info(
+                f"GeminiVertexProvider initialized: Vertex AI, project={project_id}, location={location}"
+            )
 
     def _config(self, **kwargs: Any) -> genai_types.GenerateContentConfig:
         system_text = _extract_system_text(kwargs.get("system"))
@@ -422,7 +457,7 @@ class GeminiVertexProvider:
         an Anthropic-``Message``-shaped ``SimpleNamespace``."""
 
         async def _create() -> SimpleNamespace:
-            model_name = kwargs.get("model", "gemini-2.5-pro")
+            model_name = kwargs.get("model", "gemini-3.1-pro-preview")
             contents = _build_contents(kwargs.get("messages", []))
             config = self._config(**kwargs)
             response = await self._client.aio.models.generate_content(
@@ -439,11 +474,13 @@ class GeminiVertexProvider:
         Real token-level Gemini streaming (``generate_content_stream``) is
         deliberately NOT wired here yet — verified live that the SDK
         supports it (an ``AsyncIterator[GenerateContentResponse]``, same
-        response shape as the non-streaming path), but this codebase has no
-        live GCP credentials available to exercise it end to end, and a
+        response shape as the non-streaming path). A live Gemini Developer
+        API key now exists (see ``GeminiVertexProvider``'s own docstring),
+        so this is no longer a credentials gap — it's a correctness one: a
         subtly wrong incremental tool-call-argument accumulation would be
         worse than an honest, correctly-translated non-streaming call
-        chunked for delivery. Real streaming is real, separate, deferred
+        chunked for delivery, and that accumulation logic hasn't been
+        written or verified yet. Real streaming is real, separate, deferred
         work — this wrapper is built on the now-CORRECT translation logic
         above (unlike the pre-fix stub, which reused the same broken tool
         schema and dict-shaped response), not a cosmetic no-op.

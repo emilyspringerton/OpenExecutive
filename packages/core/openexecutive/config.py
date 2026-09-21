@@ -287,24 +287,37 @@ class Settings(BaseSettings):
             )
         return self
 
-    # ---- Gemini via Vertex AI ------------------------------------------
-    # Route Claude calls to Google Gemini (via Vertex AI) instead of/
-    # alongside Anthropic direct. Uses Application Default Credentials —
-    # no API key setting here on purpose (see providers/gemini_vertex_provider.py's
-    # own doc comment on ADC resolution). Default OFF so a fresh checkout's
-    # behavior is unchanged.
+    # ---- Gemini (Vertex AI, or the simpler Developer API) --------------
+    # Route Claude calls to Google Gemini instead of/alongside Anthropic
+    # direct. Two independent credential modes (see
+    # providers/gemini_vertex_provider.py's own doc comment for the real
+    # difference) — GEMINI_ENABLED=true requires exactly one of them:
+    #   - GCP_PROJECT_ID: Vertex AI via Application Default Credentials
+    #     (a real GCP project with Vertex AI enabled + billing on, a
+    #     human-only setup step).
+    #   - GEMINI_API_KEY: the Gemini Developer API (generativelanguage.
+    #     googleapis.com) — a plain API key, no ADC/GCP-Console work needed
+    #     beyond whatever created the key. Found live in this monorepo
+    #     (EINHORN_INDUSTRIAL's own einhorn-mjolnir project) during S506 —
+    #     worth checking an org's existing secrets convention before
+    #     assuming Vertex-only setup is required.
+    # Default OFF so a fresh checkout's behavior is unchanged.
     gemini_enabled: bool = Field(False, alias="GEMINI_ENABLED")
     gcp_project_id: str | None = Field(None, alias="GCP_PROJECT_ID")
     gcp_location: str = Field("us-central1", alias="GCP_LOCATION")
-    gemini_default_model: str = Field("gemini-2.5-pro", alias="GEMINI_DEFAULT_MODEL")
+    gemini_api_key: str | None = Field(None, alias="GEMINI_API_KEY")
+    gemini_default_model: str = Field("gemini-3.1-pro-preview", alias="GEMINI_DEFAULT_MODEL")
     gemini_reasoning_model: str = Field(
-        "gemini-2.5-pro", alias="GEMINI_REASONING_MODEL"
+        "gemini-3.1-pro-preview", alias="GEMINI_REASONING_MODEL"
     )
 
     @model_validator(mode="after")
     def _validate_gemini(self) -> "Settings":
-        if self.gemini_enabled and not self.gcp_project_id:
-            raise ValueError("GEMINI_ENABLED=true requires GCP_PROJECT_ID to be set")
+        if self.gemini_enabled and not self.gcp_project_id and not self.gemini_api_key:
+            raise ValueError(
+                "GEMINI_ENABLED=true requires either GCP_PROJECT_ID (Vertex AI) "
+                "or GEMINI_API_KEY (Gemini Developer API) to be set"
+            )
         return self
 
     # ---- IDUNA (EINHORN_INDUSTRIAL M2M identity) -----------------------
