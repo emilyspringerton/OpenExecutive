@@ -301,7 +301,40 @@ login`/ADC. Real correction, not just a doc fix:
   with Vertex AI enabled" — §6's framing overstated the gap.
 - 3 new tests (api_key-only construction, api_key-takes-priority, raises with neither credential);
   all 22 provider tests + the full unit suite green; ruff/mypy clean.
-- Still real, still not done: an actual successful (non-billing-blocked) completion has never been
-  observed — that needs the human step above. IDUNA's own side of a live end-to-end boot test also
-  hasn't happened (needs a real IDUNA instance + a provisioned credential — see IDUNA's new
-  `/admin/openexecutive` Back Office page, built the same session, for that half).
+
+## 8. First real, successful end-to-end completion (2026-09-21, same day)
+
+The original key's account never got billing resolved (AI Studio prepayment credits, distinct
+from regular GCP Cloud Billing — clicking something in Cloud Console didn't touch it). Founder
+supplied a different account's key instead. Getting a real response required going all the way
+through — not stopping at unit tests — and found three more real bugs along the way, invisible to
+every existing test because none of them exercised the real, full path:
+
+- **IDUNA's own public JWKS endpoint had a real 404** — `https://okemily.com/.well-known/jwks.json`
+  was never actually proxied by nginx (fixed in IDUNA `dc5226d`+`sudo-queue/86`, a genuine,
+  previously-undiscovered infra gap affecting any external IDUNA-JWT consumer, not just this repo).
+- **`iduna_auth.py`'s own error-wrapping had a real bug** masking that 404 behind a confusing,
+  unrelated `TypeError` (`type(e)(str(e))` assumed every exception's constructor takes one
+  positional string — false for `httpx.HTTPStatusError`). Fixed with a type-preserving-when-possible
+  fallback, verified against a *real* `httpx.HTTPStatusError`, not a stand-in.
+- **`GeminiVertexProvider._translate_tools` had two more real bugs**, both only visible once real
+  specialist tool schemas (not hand-picked test fixtures) were sent through it: a Pydantic-style
+  nullable-type schema (`{"type": ["integer", "null"]}`) crashed `FunctionDeclaration` construction
+  outright, and — one layer deeper, only visible once that stopped masking it — a schema carrying
+  `additionalProperties` validated fine but failed the *actual Gemini API call* with a real `400`,
+  because the installed SDK's own `Schema.model_dump()` emits the Python field name instead of the
+  JSON alias for that one field (confirmed directly against the SDK). Both fixed in a new
+  `_sanitize_schema_for_gemini`, applied recursively. Full account, tests, and the exact fix in
+  OpenExecutive `40ae9ed`.
+
+Also switched the model default from `gemini-3.1-pro-preview` to `gemini-flash-latest`: the new
+account's free tier has zero quota for the `pro` model specifically (a real `429`, `limit: 0`) —
+flash works today; upgrading past free tier would lift that, not attempted here.
+
+**A real chat request, through the full real stack — real IDUNA-issued JWT, `IDUNAJWTValidator`,
+the orchestrator, real specialist tool schemas, `GeminiVertexProvider`, real Gemini — returned a
+real, correct response for the first time.** Not simulated, not mocked: `curl` against a locally
+booted `uvicorn openexecutive.api.main:app` with a JWT minted by a live IDUNA instance. This is the
+actual, complete finish line for what NORTHSTAR originally scoped — IDUNA's own live boot/deploy
+(beyond this one manually-booted local process) is real, separate, follow-on infrastructure work,
+not blocked on anything found in this pass.
