@@ -1357,9 +1357,21 @@ class Executive:
                     response_content.append({"type": "text", "text": block.text})
                 elif block.type == "tool_use":
                     tool_uses.append({"id": block.id, "name": block.name, "input": block.input})
-                    response_content.append(
-                        {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
-                    )
+                    tool_use_block: dict[str, Any] = {
+                        "type": "tool_use",
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    }
+                    # Gemini-only: see gemini_vertex_provider._response_content_blocks's own
+                    # docstring -- this signature must round-trip through the persisted
+                    # conversation history verbatim, or the NEXT Gemini call for this turn fails
+                    # outright (400 INVALID_ARGUMENT: missing thought_signature). Other providers'
+                    # blocks never set this attribute, so this is a safe no-op for them.
+                    sig = getattr(block, "gemini_thought_signature", None)
+                    if sig:
+                        tool_use_block["gemini_thought_signature"] = sig
+                    response_content.append(tool_use_block)
                 elif block.type == "server_tool_use":
                     # Anthropic resolves server tools (web_search) within the
                     # same generation; we just echo the block back on the next

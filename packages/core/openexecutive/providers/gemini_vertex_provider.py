@@ -26,6 +26,7 @@ originally assumed was the only path) and is kept for import-path stability.
 
 from __future__ import annotations
 
+import base64
 import logging
 import uuid
 from collections.abc import AsyncIterable, Awaitable
@@ -200,15 +201,24 @@ def _content_blocks_to_parts(
             tool_use_id = block.get("id", "")
             if tool_use_id:
                 tool_id_to_name[tool_use_id] = name
-            parts.append(
-                genai_types.Part(
-                    function_call=genai_types.FunctionCall(
-                        id=tool_use_id or None,
-                        name=name,
-                        args=block.get("input", {}) or {},
-                    )
+            # thought_signature lives on the PART, not the FunctionCall (verified against the
+            # installed SDK's own field list) -- see _response_content_blocks's own docstring for
+            # the real bug this closes. A block from a non-Gemini turn (or an older persisted
+            # turn from before this fix) simply has no signature to echo back; Gemini accepts a
+            # function-call Part with no thought_signature on a NON-thinking-model turn (the
+            # requirement is specifically "if the model emitted one, echo it back"), so omitting
+            # the field here is a safe no-op, not a silent swallow of a real error.
+            sig_b64 = block.get("gemini_thought_signature")
+            part_kwargs: dict[str, Any] = {
+                "function_call": genai_types.FunctionCall(
+                    id=tool_use_id or None,
+                    name=name,
+                    args=block.get("input", {}) or {},
                 )
-            )
+            }
+            if sig_b64:
+                part_kwargs["thought_signature"] = base64.b64decode(sig_b64)
+            parts.append(genai_types.Part(**part_kwargs))
         elif btype == "tool_result":
             inner = block.get("content")
             if isinstance(inner, str):
@@ -334,19 +344,47 @@ def _response_content_blocks(candidate: Any) -> tuple[list[SimpleNamespace], boo
     the pre-fix code's own ``_translate_response`` did exactly that, which
     would have made every specialist consultation invisible to
     ``consult_specialist``'s own tool-use routing).
+
+    ``thought_signature`` (real bug found live, 2026-09-21 — every multi-step
+    tool-use turn was failing on its second Gemini call with `400
+    INVALID_ARGUMENT: Function call is missing a thought_signature`):
+    Gemini's "thinking" models attach an opaque ``bytes`` signature to the
+    ``Part`` that carries a ``function_call`` (NOT to the ``FunctionCall``
+    itself — verified directly against the installed SDK's own
+    ``Part``/``FunctionCall`` field lists), and require that exact signature
+    to be echoed back verbatim when that function call is replayed as
+    conversation history on a later iteration WITHIN the same turn's
+    tool-use loop (``executive.py``'s in-memory ``messages`` list, and the
+    equivalent loops in ``workflows/executive_research.py``/
+    ``executive_reflection.py`` -- not cross-turn persistence: only the
+    final synthesized text is ever written to the session store). This
+    codebase's internal Anthropic-shaped ``tool_use`` block had nowhere to
+    carry it, so it was silently dropped — every second-and-later iteration
+    of any tool-using turn then failed outright. Base64-encoded here
+    (``bytes`` isn't JSON-serializable, and this attribute rides along on a
+    plain dict through debug/event collectors that do serialize to JSON)
+    onto a ``gemini_thought_signature`` attribute; ``_content_blocks_to_parts``
+    below reads it back and re-attaches it to the replayed ``Part``. Other
+    providers' blocks never set this attribute, so ``getattr(..., None)``
+    elsewhere stays a safe, generic no-op for them.
     """
     blocks: list[SimpleNamespace] = []
     has_tool_use = False
     content = getattr(candidate, "content", None)
     parts = getattr(content, "parts", None) or []
     for part in parts:
+        # Real gap found in review (2026-09-21): an early `continue` here after a text branch
+        # would silently drop a function_call (and its thought_signature) on any Part that
+        # somehow carries both -- in practice Gemini 2.5 never sends both on one Part, but nothing
+        # in the SDK's own types guarantees that, and Gemini 3's docs describe signatures riding
+        # on more part kinds. No `continue`: both branches are checked independently instead.
         text = getattr(part, "text", None)
         if text:
             blocks.append(SimpleNamespace(type="text", text=text))
-            continue
         fc = getattr(part, "function_call", None)
         if fc is not None:
             has_tool_use = True
+            sig = getattr(part, "thought_signature", None)
             blocks.append(
                 SimpleNamespace(
                     type="tool_use",
@@ -360,6 +398,9 @@ def _response_content_blocks(candidate: Any) -> tuple[list[SimpleNamespace], boo
                     id=f"toolu_gemini_{uuid.uuid4().hex[:12]}",
                     name=getattr(fc, "name", ""),
                     input=dict(getattr(fc, "args", None) or {}),
+                    gemini_thought_signature=(
+                        base64.b64encode(sig).decode("ascii") if sig else None
+                    ),
                 )
             )
     return blocks, has_tool_use

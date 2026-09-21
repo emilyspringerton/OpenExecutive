@@ -589,12 +589,19 @@ class ExecutiveReflectionWorkflow(Workflow):
                     if block_type == "text":
                         assistant_blocks.append({"type": "text", "text": getattr(block, "text", "")})
                     elif block_type == "tool_use":
-                        assistant_blocks.append({
+                        tool_use_block: dict[str, Any] = {
                             "type": "tool_use",
                             "id": getattr(block, "id", ""),
                             "name": getattr(block, "name", ""),
                             "input": getattr(block, "input", {}) or {},
-                        })
+                        }
+                        # Gemini-only, real bug (2026-09-21) -- see
+                        # gemini_vertex_provider.py's own docstring on
+                        # _response_content_blocks for the full account.
+                        sig = getattr(block, "gemini_thought_signature", None)
+                        if sig:
+                            tool_use_block["gemini_thought_signature"] = sig
+                        assistant_blocks.append(tool_use_block)
                     elif (replay := reasoning_replay_block(block)) is not None:
                         # OpenRouter reasoning continuity across tool iterations.
                         assistant_blocks.append(replay)

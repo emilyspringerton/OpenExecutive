@@ -394,3 +394,105 @@ def test_fake_stream_iterates_and_returns_final_message() -> None:
     seen = asyncio.run(_run())
     assert seen == ["message_start", "content_block_delta", "message_stop"]
     assert asyncio.run(stream.get_final_message()) is final
+
+
+def test_response_to_namespace_captures_thought_signature_on_tool_use_block() -> None:
+    """Real bug, found live (2026-09-21): every multi-step tool-use chat turn was failing on its
+    SECOND Gemini call with `400 INVALID_ARGUMENT: Function call is missing a
+    thought_signature` -- Gemini's thinking models attach an opaque bytes signature to the PART
+    that carries a function_call (not the FunctionCall itself), and require it echoed back
+    verbatim when that call is replayed as history. This codebase's internal tool_use block had
+    nowhere to carry it, so it was silently dropped on the way out of _response_content_blocks.
+    """
+    sig = b"\x00\x01\xfe\xff-real-opaque-bytes-not-utf8"
+    resp = genai_types.GenerateContentResponse(
+        candidates=[
+            genai_types.Candidate(
+                content=genai_types.Content(
+                    role="model",
+                    parts=[
+                        genai_types.Part(
+                            function_call=genai_types.FunctionCall(
+                                name="consult_specialist", args={"domain": "cfo"}
+                            ),
+                            thought_signature=sig,
+                        )
+                    ],
+                ),
+                finish_reason=genai_types.FinishReason.STOP,
+            )
+        ],
+    )
+    ns = _response_to_namespace(resp, "gemini-2.5-pro")
+    block = ns.content[0]
+    assert block.type == "tool_use"
+    assert block.gemini_thought_signature is not None
+    # base64-encoded, not raw bytes -- turns are persisted as JSON (chat.turn_persisted), and
+    # bytes are not JSON-serializable.
+    assert isinstance(block.gemini_thought_signature, str)
+    import base64
+
+    assert base64.b64decode(block.gemini_thought_signature) == sig
+
+
+def test_response_to_namespace_tool_use_without_thought_signature_stays_none() -> None:
+    """Non-thinking-model responses (or a part that genuinely has none) must not synthesize a
+    fake signature -- None round-trips to "omit the field", a real no-op, not a silent guess."""
+    resp = genai_types.GenerateContentResponse(
+        candidates=[
+            genai_types.Candidate(
+                content=genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part.from_function_call(name="consult_specialist", args={"domain": "cfo"})],
+                ),
+                finish_reason=genai_types.FinishReason.STOP,
+            )
+        ],
+    )
+    ns = _response_to_namespace(resp, "gemini-2.5-pro")
+    assert ns.content[0].gemini_thought_signature is None
+
+
+def test_build_contents_round_trips_thought_signature_onto_the_replayed_part() -> None:
+    """The other half of the same real bug: a tool_use block carrying a persisted
+    gemini_thought_signature must come back out as a Part with that exact thought_signature set
+    (not on the FunctionCall -- verified against the installed SDK's own field list), so the next
+    Gemini call in this turn doesn't fail with the missing-signature 400."""
+    import base64
+
+    sig = b"\x00\x01\xfe\xff-real-opaque-bytes-not-utf8"
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "consult_specialist",
+                    "input": {"domain": "cfo"},
+                    "gemini_thought_signature": base64.b64encode(sig).decode("ascii"),
+                }
+            ],
+        }
+    ]
+    contents = _build_contents(messages)
+    part = contents[0].parts[0]
+    assert part.function_call.name == "consult_specialist"
+    assert part.thought_signature == sig
+
+
+def test_build_contents_omits_thought_signature_when_block_has_none() -> None:
+    """A tool_use block with no gemini_thought_signature (any other provider's block, or a turn
+    persisted before this fix) must not crash and must not fabricate a signature."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "consult_specialist", "input": {"domain": "cfo"}}
+            ],
+        }
+    ]
+    contents = _build_contents(messages)
+    part = contents[0].parts[0]
+    assert part.function_call.name == "consult_specialist"
+    assert part.thought_signature is None

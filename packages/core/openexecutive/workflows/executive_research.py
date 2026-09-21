@@ -909,12 +909,21 @@ async def _executive_synthesis_loop(
                         "text": getattr(block, "text", ""),
                     })
                 elif block_type == "tool_use":
-                    assistant_blocks.append({
+                    tool_use_block: dict[str, Any] = {
                         "type": "tool_use",
                         "id": getattr(block, "id", ""),
                         "name": getattr(block, "name", ""),
                         "input": getattr(block, "input", {}) or {},
-                    })
+                    }
+                    # Gemini-only, real bug (2026-09-21): a function call replayed as history
+                    # without its own thought_signature fails the NEXT Gemini call outright (400
+                    # INVALID_ARGUMENT). See gemini_vertex_provider._response_content_blocks's own
+                    # docstring for the full account; other providers' blocks never set this
+                    # attribute, so this is a safe no-op for them.
+                    sig = getattr(block, "gemini_thought_signature", None)
+                    if sig:
+                        tool_use_block["gemini_thought_signature"] = sig
+                    assistant_blocks.append(tool_use_block)
                 elif (replay := reasoning_replay_block(block)) is not None:
                     # OpenRouter reasoning continuity across tool iterations.
                     assistant_blocks.append(replay)
@@ -1054,12 +1063,18 @@ async def _watchlist_analysis_loop(
                     {"type": "text", "text": getattr(block, "text", "")}
                 )
             elif block_type == "tool_use":
-                assistant_blocks.append({
+                tool_use_block: dict[str, Any] = {
                     "type": "tool_use",
                     "id": getattr(block, "id", ""),
                     "name": getattr(block, "name", ""),
                     "input": getattr(block, "input", {}) or {},
-                })
+                }
+                # Gemini-only, real bug (2026-09-21) -- see the other occurrence of this same
+                # comment earlier in this file / gemini_vertex_provider.py's own docstring.
+                sig = getattr(block, "gemini_thought_signature", None)
+                if sig:
+                    tool_use_block["gemini_thought_signature"] = sig
+                assistant_blocks.append(tool_use_block)
             elif (replay := reasoning_replay_block(block)) is not None:
                 # OpenRouter reasoning continuity across tool iterations.
                 assistant_blocks.append(replay)

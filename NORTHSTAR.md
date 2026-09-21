@@ -338,3 +338,51 @@ booted `uvicorn openexecutive.api.main:app` with a JWT minted by a live IDUNA in
 actual, complete finish line for what NORTHSTAR originally scoped — IDUNA's own live boot/deploy
 (beyond this one manually-booted local process) is real, separate, follow-on infrastructure work,
 not blocked on anything found in this pass.
+
+## 9. "openexec is having a lot of problems" — the real cause, and billing unblocked (2026-09-21, same day)
+
+Founder: "openexec is having a lot of problems can you check the logs or anything? otherwise
+assuming we need the pro model i paid them it should be possible now."
+
+**The real cause, found by actually reading `journalctl --user -u openexecutive-api`, not
+guessing**: essentially every chat turn that triggered a tool call was failing outright on its
+SECOND Gemini API call with `400 INVALID_ARGUMENT: Function call is missing a thought_signature in
+functionCall parts`. Gemini's thinking-enabled models attach an opaque `bytes` `thought_signature`
+to the `Part` that carries a `function_call` (confirmed directly against the installed SDK's own
+`Part`/`FunctionCall` field lists — it lives on `Part`, not `FunctionCall`), and require that exact
+signature echoed back verbatim when the call is replayed as conversation history on the next
+iteration of the same tool-use loop. This codebase's internal Anthropic-shaped `tool_use` block —
+built when the orchestrator only targeted the Anthropic API — had nowhere to carry that field, so
+it was silently dropped on every response, breaking any multi-step tool-using turn (i.e. almost
+every real chat message, since `list_department_goals` and friends fire on iteration 1 of nearly
+every question). This was **the actual "lot of problems"**, not a vague or unreproducible
+complaint.
+
+Fixed by threading a `gemini_thought_signature` field (base64-encoded, since `bytes` isn't
+JSON-serializable) through the round trip in all FOUR places a tool call gets replayed as history:
+`orchestrator/executive.py`'s main chat loop, and the two independent copies of the same pattern in
+`workflows/executive_research.py` and `workflows/executive_reflection.py` (found only by an
+independent second-model adversarial review of the first fix — the initial pass fixed the chat
+path and missed that the other three workflows do their own tool-use replay rather than sharing
+`executive.py`'s). Also closed, same review pass: a `Part` carrying both `text` and `function_call`
+in the same response would have silently dropped the function call (an early `continue` after the
+text branch) — latent on Gemini 2.5 (which never sends both on one `Part`), but removed rather than
+left as a landmine for a future model that might.
+
+4 new tests in `tests/unit/test_gemini_vertex_provider.py`, built against the real installed SDK
+types (not mocks) — capturing a real signature, confirming `None` when absent, and round-tripping
+one through `_build_contents` back onto a reconstructed `Part`. Full test suite green (3669 passed,
+1 skipped, only the pre-existing known-red `test_chat_with_committee_streams_phases_and_revised_text`
+failing — same as before this change, unrelated). `ruff`/`mypy` clean on every touched file.
+
+**Billing, separately**: the founder paid to unblock the pro-tier model on the current Gemini key's
+account (the same account §8 switched to after the original's credits ran out). Live-verified
+directly (a real `generate_content` call, not just a docs check): `gemini-3.1-pro-preview` now
+succeeds where it previously 429'd with `RESOURCE_EXHAUSTED, limit: 0`. `gemini-2.5-pro` itself now
+404s for new users ("no longer available ... use models/gemini-3.1-pro-preview" — the API's own
+message). `.env`'s `GEMINI_DEFAULT_MODEL`/`GEMINI_REASONING_MODEL`/`DEFAULT_MODEL`/
+`DEEP_REASONING_MODEL` moved back to `gemini-3.1-pro-preview` (matching `config.py`'s own original,
+never-changed code defaults — the flash downgrade was always meant to be temporary);
+`ROUTING_MODEL` stays on `gemini-flash-latest` on purpose, matching the cheap/fast-routing,
+strong/slow-reasoning split this repo's own Claude model defaults already use (haiku routes, opus
+reasons).
