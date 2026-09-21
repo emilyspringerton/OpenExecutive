@@ -24,7 +24,7 @@ def test_public_deployment_without_secret_refuses_to_boot(
 ) -> None:
     monkeypatch.setenv("OE_PUBLIC_DEPLOYMENT", "1")
 
-    with pytest.raises(RuntimeError, match="BACKEND_SHARED_SECRET is required"):
+    with pytest.raises(RuntimeError, match="is required when OE_PUBLIC_DEPLOYMENT is set"):
         create_app()
 
 
@@ -59,5 +59,16 @@ def test_truthy_and_unrecognised_values_arm_the_guard(
     monkeypatch.setenv("OE_PUBLIC_DEPLOYMENT", value)
 
     assert _is_public_deployment() is True
-    with pytest.raises(RuntimeError, match="BACKEND_SHARED_SECRET is required"):
+    with pytest.raises(RuntimeError, match="is required when OE_PUBLIC_DEPLOYMENT is set"):
         create_app()
+
+
+def test_public_deployment_with_only_iduna_url_boots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S506: an IDUNA-only deployment (no shared secret at all) is also a
+    valid way to satisfy the public-deployment guard — IDUNA-issued JWTs are
+    an additional accepted credential on the same gate, not a second,
+    separate one BACKEND_SHARED_SECRET must still be present for."""
+    monkeypatch.setenv("OE_PUBLIC_DEPLOYMENT", "1")
+    monkeypatch.setenv("IDUNA_URL", "http://localhost:8080")
+
+    assert create_app() is not None

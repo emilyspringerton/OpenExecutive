@@ -1,12 +1,18 @@
 # OpenExecutive ↔ IDUNA ↔ Gemini Integration (Fast Shipping)
 
-**Status:** ⚠️ Early scaffolding, not ready to deploy — corrected 2026-09-21, see
-[`../NORTHSTAR.md`](../NORTHSTAR.md) for the real, checked critical review. The IDUNA side
-(`/api/v1/openexecutive/provision`) is real and live; the OpenExecutive-side files below exist but
-have two confirmed bugs (wrong JWT key algorithm, wrong tool schema shape) and are not wired into
-config, the provider registry, or any route yet. Treat everything below this line as the original,
-optimistic plan, not a status report.
-**Effort:** 1-2 hours (original estimate — see NORTHSTAR.md's own phased estimate instead)
+**Status:** ✅ Wired, tested, and adversarially reviewed (2 rounds) — updated 2026-09-21, see
+[`../NORTHSTAR.md`](../NORTHSTAR.md) §6 for the full account of what was found and fixed (a critical
+authorization gap, a tool-result correlation bug, and the smaller issues both review rounds caught).
+The IDUNA side (`/api/v1/openexecutive/provision`) is real and live; the OpenExecutive side now has
+a corrected JWT validator (EC algorithm, audience + `openexec.*` permission check, JWKS hardening),
+a `google.genai`-based Gemini provider registered in the provider registry, and config/`.env.example`
+wiring. **Not yet done**: a live boot test against real GCP/IDUNA credentials (this sandbox has
+neither) — `packages/core/tests/unit/test_iduna_jwt_validator.py`,
+`test_iduna_auth_gate.py`, and `test_gemini_vertex_provider.py` are real, passing, non-mocked-crypto
+coverage, but that is not the same as a live end-to-end run. Treat everything below this line as the
+original, optimistic plan/estimate, not a status report — see NORTHSTAR.md §6 for what's real.
+**Effort:** 1-2 hours (original estimate; the real effort given what round-1 review found was
+considerably more — see NORTHSTAR.md §6)
 **Architecture:** OpenExecutive (Python FastAPI) → IDUNA (Go IAM) + Gemini Vertex API
 
 ---

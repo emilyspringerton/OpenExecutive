@@ -23,6 +23,7 @@ from openexecutive.config import get_settings
 from openexecutive.providers import openrouter_catalog
 from openexecutive.providers.anthropic_provider import AnthropicProvider
 from openexecutive.providers.feature_gate import FeatureSpec
+from openexecutive.providers.gemini_vertex_provider import GeminiVertexProvider
 from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
 from openexecutive.providers.openrouter_provider import OpenRouterProvider
 from openexecutive.providers.provider import LLMProvider
@@ -177,6 +178,29 @@ def _local_models(settings: Any) -> list[str]:
     return list(getattr(settings, "local_models", []) or [])
 
 
+def _gemini_models(settings: Any) -> list[str]:
+    """Configured Gemini model slugs, or ``[]`` when Gemini routing is off.
+
+    Read defensively: lightweight test settings stubs may omit the field.
+    """
+    if not getattr(settings, "gemini_enabled", False):
+        return []
+    # Order-preserving de-dupe (not a set) -- a set's iteration order isn't
+    # guaranteed stable across processes, which would shuffle the Council UI
+    # dropdown's Gemini entries on every restart (found in quality review).
+    ordered = [
+        getattr(settings, "gemini_default_model", None),
+        getattr(settings, "gemini_reasoning_model", None),
+    ]
+    seen: set[str] = set()
+    result: list[str] = []
+    for m in ordered:
+        if m and m not in seen:
+            seen.add(m)
+            result.append(m)
+    return result
+
+
 def openrouter_models() -> list[str]:
     """Non-Anthropic-direct slugs offered when ``OPENROUTER_ENABLED`` is on.
 
@@ -212,6 +236,7 @@ def allowed_models() -> list[str]:
     if settings.openrouter_enabled:
         models.extend(openrouter_models())
     models.extend(_local_models(settings))
+    models.extend(_gemini_models(settings))
     return models
 
 
@@ -268,6 +293,7 @@ def _openrouter_model_resolver(model: str) -> tuple[str, FeatureSpec] | None:
 _anthropic_provider: AnthropicProvider | None = None
 _openrouter_provider: OpenRouterProvider | None = None
 _local_provider: OpenAICompatibleProvider | None = None
+_gemini_provider: GeminiVertexProvider | None = None
 
 
 def _anthropic() -> AnthropicProvider:
@@ -352,6 +378,26 @@ def _openrouter() -> OpenRouterProvider:
     return _openrouter_provider
 
 
+def _gemini() -> GeminiVertexProvider:
+    global _gemini_provider
+    if _gemini_provider is None:
+        settings = get_settings()
+        project_id = getattr(settings, "gcp_project_id", None)
+        if not project_id:
+            # The Settings model_validator already prevents GEMINI_ENABLED
+            # without a project id, but defense in depth, matching every
+            # other provider constructor in this module.
+            raise HTTPException(
+                status_code=400,
+                detail="Gemini routing requires GCP_PROJECT_ID",
+            )
+        _gemini_provider = GeminiVertexProvider(
+            project_id=project_id,
+            location=getattr(settings, "gcp_location", "us-central1"),
+        )
+    return _gemini_provider
+
+
 def get_provider(model: str) -> LLMProvider:
     """Return the provider that should serve calls for ``model``.
 
@@ -360,6 +406,10 @@ def get_provider(model: str) -> LLMProvider:
     * Local models (slugs listed in ``LOCAL_MODELS`` with
       ``LOCAL_MODELS_ENABLED`` on) — the self-hosted OpenAI-compatible
       backend at ``LOCAL_BASE_URL``. Always wins for its configured slugs.
+    * Gemini models (``GEMINI_DEFAULT_MODEL``/``GEMINI_REASONING_MODEL``
+      with ``GEMINI_ENABLED`` on) — Vertex AI via ``GeminiVertexProvider``.
+      Checked before the Claude branch since a Gemini slug never matches
+      ``_is_claude`` anyway, but explicit precedence avoids relying on that.
     * Claude family (any ``claude-<family>-<version>`` id) — Anthropic
       direct by default; OpenRouter when ``OPENROUTER_ENABLED`` is on.
     * Other non-Claude (anything from ``openrouter_models()``, or any
@@ -374,6 +424,8 @@ def get_provider(model: str) -> LLMProvider:
     # to a hosted vendor.
     if model in _local_models(settings):
         return _local()
+    if model in _gemini_models(settings):
+        return _gemini()
     if _is_claude(model):
         if settings.openrouter_enabled:
             return _openrouter()
@@ -394,7 +446,8 @@ def get_provider(model: str) -> LLMProvider:
 
 def _reset_for_tests() -> None:
     """Drop cached provider singletons. Test-only — pytest fixtures call this."""
-    global _anthropic_provider, _openrouter_provider, _local_provider
+    global _anthropic_provider, _openrouter_provider, _local_provider, _gemini_provider
     _anthropic_provider = None
     _openrouter_provider = None
     _local_provider = None
+    _gemini_provider = None

@@ -28,11 +28,26 @@ dependencies = [
     "aiohttp>=3.9.0",
     "google-auth>=2.29.0",
     "google-api-python-client>=2.131.0",
+    "google-cloud-aiplatform>=1.70.0",
+    # providers/gemini_vertex_provider.py imports google.genai directly (the
+    # current, non-deprecated Gen AI SDK -- see that module's own doc
+    # comment on why NOT vertexai.generative_models). Only present
+    # transitively via google-cloud-aiplatform today (confirmed: uv.lock
+    # resolves it without this line) -- pinned explicitly for the same real
+    # reason pyjwt[crypto] is below: a future google-cloud-aiplatform
+    # version dropping or narrowing that transitive requirement should not
+    # silently break this import (found in adversarial review).
+    "google-genai>=1.0.0",
     "mcp<2,>=1.2.0",
     "honcho-ai>=2.0,<3",
     "defusedxml>=0.7.1",
     "feedparser>=6.0.11",
     "tzdata>=2026.4",
+    # Already present transitively (via mcp) with the [crypto] extra, but the
+    # IDUNA JWT auth path (auth/iduna_auth.py) depends on it directly for
+    # ES256 (EC) verification — pin it explicitly rather than relying on
+    # another package's own transitive requirement staying compatible.
+    "pyjwt[crypto]>=2.9.0",
 ]
 
 [project.urls]

@@ -47,6 +47,7 @@ from openexecutive.api.routes import (
 from openexecutive.api.routes import (
     auth as auth_route,
 )
+from openexecutive.auth.iduna_auth import IDUNAJWTValidator
 from openexecutive.integrations.google_chat import router as google_chat_router
 from openexecutive.integrations.telegram_bot import router as telegram_router
 
@@ -734,6 +735,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         set_active_gateway(None)
         await app.state.mcp_gateway.close()
 
+    iduna_validator_for_shutdown = getattr(app.state, "iduna_validator", None)
+    if iduna_validator_for_shutdown is not None:
+        await iduna_validator_for_shutdown.jwks_cache.aclose()
+
     # Cleanup if needed (ChromaDB handles persistence)
 
 
@@ -782,26 +787,95 @@ def create_app() -> FastAPI:
     # off (intended for local dev only — production deploys MUST set it).
     # Fail closed on any internet-reachable instance: set OE_PUBLIC_DEPLOYMENT=1
     # there, and a missing secret becomes a boot failure rather than a warning.
+    #
+    # IDUNA integration (EINHORN_INDUSTRIAL M2M identity, S506): when
+    # IDUNA_URL is configured, a valid IDUNA-issued JWT (Authorization:
+    # Bearer <token>, verified against IDUNA's own /.well-known/jwks.json)
+    # is accepted as an alternative credential on this SAME gate — not a
+    # separate one. Either credential alone satisfies the gate (an OR, not
+    # an AND); a deployment can legitimately run on IDUNA alone with no
+    # shared secret configured at all, a real intentional shape for an
+    # IDUNA-native service (see config.py's own iduna_url doc comment).
+    # This is the one uniform auth chokepoint every request already passes through,
+    # so it is the natural, minimal-risk place to make IDUNA-issued
+    # credentials valid callers of the whole API, matching how every other
+    # agent in that monorepo (Emily Prime, MJOLNIR, ...) authenticates to
+    # its sibling services. An install with no IDUNA_URL behaves exactly as
+    # before.
+    from openexecutive.config import get_settings as _get_settings_for_auth
+
     shared_secret = os.environ.get("BACKEND_SHARED_SECRET", "").strip()
-    if not shared_secret and _is_public_deployment():
-        raise RuntimeError(
-            "BACKEND_SHARED_SECRET is required when OE_PUBLIC_DEPLOYMENT is set. "
-            "Generate one with: openssl rand -hex 32"
+    settings_for_auth = _get_settings_for_auth()
+    iduna_url = getattr(settings_for_auth, "iduna_url", None)
+    iduna_validator = (
+        IDUNAJWTValidator(
+            iduna_url,
+            expected_audience=settings_for_auth.iduna_expected_audience,
+            required_permission_prefix=settings_for_auth.iduna_required_permission_prefix,
         )
-    if shared_secret:
+        if iduna_url
+        else None
+    )
+    # So the lifespan shutdown below can close its JWKSCache's httpx client
+    # (found undone in adversarial review — the client was constructed but
+    # never closed on shutdown, the same real pattern app.state.mcp_gateway
+    # already establishes for its own cleanup).
+    app.state.iduna_validator = iduna_validator
+    if not shared_secret and not iduna_validator and _is_public_deployment():
+        raise RuntimeError(
+            "BACKEND_SHARED_SECRET (or IDUNA_URL) is required when "
+            "OE_PUBLIC_DEPLOYMENT is set. Generate a secret with: "
+            "openssl rand -hex 32"
+        )
+    if shared_secret or iduna_validator:
         @app.middleware("http")
         async def _shared_secret_gate(request: Request, call_next):  # type: ignore[no-untyped-def]
             if request.url.path in _UNAUTHENTICATED_PATHS or request.method == "OPTIONS":
                 return await call_next(request)
             provided = request.headers.get("x-api-key", "")
-            if not provided or not hmac.compare_digest(provided, shared_secret):
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
-            return await call_next(request)
+            # hmac.compare_digest raises TypeError on a non-ASCII str (found
+            # on this line during round-1 review) — an unauthenticated
+            # request with a non-ASCII x-api-key would 500 instead of 401
+            # without encoding first. Starlette/h11 decode header VALUES as
+            # latin-1 (RFC 7230 restricts header field-values to that
+            # range), so `provided.encode("latin-1")` recovers the exact
+            # wire bytes the client sent — a plain `.encode()` (UTF-8) would
+            # silently re-encode a non-ASCII provided value to DIFFERENT
+            # bytes than the header actually carried, permanently failing an
+            # otherwise byte-correct secret (found in round-2 review). A
+            # real operator secret is expected to be ASCII (e.g. `openssl
+            # rand -hex 32`), where UTF-8 and latin-1 agree byte-for-byte,
+            # so `shared_secret.encode()` (UTF-8, matching how Python reads
+            # os.environ) is unaffected by this distinction in practice.
+            if (
+                shared_secret
+                and provided
+                and hmac.compare_digest(provided.encode("latin-1"), shared_secret.encode())
+            ):
+                return await call_next(request)
+            if iduna_validator:
+                auth_header = request.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    try:
+                        claims = await iduna_validator.verify(auth_header[len("Bearer "):])
+                        # Not read anywhere yet (found in review) -- kept for
+                        # real, named future work: per-route/per-scope
+                        # authorization (today's check is all-or-nothing on
+                        # any openexec.* permission, see
+                        # IDUNAJWTValidator._require_permission's own doc
+                        # comment on that deliberate v0 limitation).
+                        request.state.iduna_claims = claims
+                        return await call_next(request)
+                    except Exception as e:
+                        logging.getLogger("openexecutive").warning(
+                            f"IDUNA token validation failed: {e}"
+                        )
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
     else:
         logging.getLogger("openexecutive").warning(
-            "BACKEND_SHARED_SECRET is unset — API is open. Acceptable for local "
-            "dev only; set this secret in any environment reachable from the "
-            "public internet."
+            "BACKEND_SHARED_SECRET is unset and IDUNA_URL is not configured — "
+            "API is open. Acceptable for local dev only; set one of them in "
+            "any environment reachable from the public internet."
         )
 
     app.include_router(auth_route.router, tags=["auth"])

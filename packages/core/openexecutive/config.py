@@ -287,6 +287,82 @@ class Settings(BaseSettings):
             )
         return self
 
+    # ---- Gemini via Vertex AI ------------------------------------------
+    # Route Claude calls to Google Gemini (via Vertex AI) instead of/
+    # alongside Anthropic direct. Uses Application Default Credentials —
+    # no API key setting here on purpose (see providers/gemini_vertex_provider.py's
+    # own doc comment on ADC resolution). Default OFF so a fresh checkout's
+    # behavior is unchanged.
+    gemini_enabled: bool = Field(False, alias="GEMINI_ENABLED")
+    gcp_project_id: str | None = Field(None, alias="GCP_PROJECT_ID")
+    gcp_location: str = Field("us-central1", alias="GCP_LOCATION")
+    gemini_default_model: str = Field("gemini-2.5-pro", alias="GEMINI_DEFAULT_MODEL")
+    gemini_reasoning_model: str = Field(
+        "gemini-2.5-pro", alias="GEMINI_REASONING_MODEL"
+    )
+
+    @model_validator(mode="after")
+    def _validate_gemini(self) -> "Settings":
+        if self.gemini_enabled and not self.gcp_project_id:
+            raise ValueError("GEMINI_ENABLED=true requires GCP_PROJECT_ID to be set")
+        return self
+
+    # ---- IDUNA (EINHORN_INDUSTRIAL M2M identity) -----------------------
+    # Accepts an IDUNA-issued JWT (ES256, validated against IDUNA's own
+    # /.well-known/jwks.json) as an alternative valid credential on the same
+    # gate BACKEND_SHARED_SECRET already guards (api/main.py) -- either
+    # credential alone satisfies it (an OR, not an AND); an install can
+    # legitimately run on IDUNA alone with no shared secret configured at
+    # all (a real, intentional deployment shape for an IDUNA-native
+    # service, not a bug -- corrected in round-2 review from an earlier,
+    # inaccurate "additional... never a replacement" description that
+    # implied a shared secret was always still required). Unset by default:
+    # an install with no IDUNA_URL behaves exactly as before, gated by
+    # BACKEND_SHARED_SECRET alone.
+    iduna_url: str | None = Field(None, alias="IDUNA_URL")
+    # Real authorization, not just signature validation (adversarial-review-
+    # found gap): IDUNA's ES256 key also signs tokens for unrelated, low-
+    # trust principals (public guest game accounts, other games' end users)
+    # — a merely-valid IDUNA signature is NOT sufficient to trust a caller
+    # with this API. See auth/iduna_auth.py's own top doc comment for the
+    # full account. Defaults match IDUNA's own real, verified conventions
+    # (every M2M/service token's real `aud`, and the real permission prefix
+    # POST /api/v1/openexecutive/provision actually grants).
+    iduna_expected_audience: str = Field(
+        "farthq-ecosystem", alias="IDUNA_EXPECTED_AUDIENCE"
+    )
+    iduna_required_permission_prefix: str = Field(
+        "openexec.", alias="IDUNA_REQUIRED_PERMISSION_PREFIX"
+    )
+    # This deployment's OWN M2M identity for calling OUT to other IDUNA-
+    # fronted services as an authenticated agent (docs/IDUNA_INTEGRATION.md)
+    # — a real, separate, not-yet-implemented use case from the INBOUND
+    # validation above (which needs only iduna_url). Read by nothing today;
+    # kept here as the settled name for when that outbound path is built,
+    # not because anything currently uses it.
+    iduna_agent_name: str | None = Field(None, alias="IDUNA_AGENT_NAME")
+    iduna_agent_secret: str | None = Field(None, alias="IDUNA_AGENT_SECRET")
+
+    @field_validator("iduna_url")
+    @classmethod
+    def _validate_iduna_url(cls, v: str | None) -> str | None:
+        if v is None or not v.strip():
+            return None
+        v = v.strip()
+        from urllib.parse import urlparse
+
+        parsed = urlparse(v)
+        is_loopback = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+        if parsed.scheme != "https" and not is_loopback:
+            raise ValueError(
+                f"IDUNA_URL must use https:// (got {v!r}) unless the host is "
+                "localhost/127.0.0.1 — the JWKS fetched from this URL is this "
+                "gate's entire trust anchor; plaintext HTTP lets anyone with "
+                "network position between this service and IDUNA serve a "
+                "forged key set"
+            )
+        return v
+
     @model_validator(mode="after")
     def _validate_provider_available(self) -> "Settings":
         # At least one backend must be reachable, or every model call fails.
@@ -294,11 +370,13 @@ class Settings(BaseSettings):
             self.anthropic_api_key
             or self.openrouter_enabled
             or self.local_models_enabled
+            or self.gemini_enabled
         ):
             raise ValueError(
                 "No LLM provider configured. Set ANTHROPIC_API_KEY, or enable "
                 "OpenRouter (OPENROUTER_ENABLED=true + OPENROUTER_API_KEY), or "
-                "enable local models (LOCAL_MODELS_ENABLED=true + LOCAL_BASE_URL)."
+                "enable local models (LOCAL_MODELS_ENABLED=true + LOCAL_BASE_URL), "
+                "or enable Gemini (GEMINI_ENABLED=true + GCP_PROJECT_ID)."
             )
         return self
 

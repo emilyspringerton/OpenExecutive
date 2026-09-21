@@ -203,3 +203,78 @@ whenever real provisioning (not the fast-shipping doc's illustrative example) ac
 Nothing in Phase A-C has been started as part of writing this NORTHSTAR — this pass is scoping and
 process only, per the founder's own explicit ask ("fill in process and write the northstar...
 come up with the next steps").
+
+## 6. Phase A-C done (2026-09-21, founder real-time: "get it up in IDUNA asap")
+
+All of Phase A, all of Phase B, and the "prove it" half of Phase C are done — real, tested,
+adversarially reviewed (2 rounds: 3 reviewers found real CRITICAL/HIGH issues, all fixed and
+re-verified by a second round of the 2 reviewers that found them). This turned up MORE than the
+critical review above anticipated — reviewing real, working code surfaces bugs a read-only audit
+of broken code can't. In order found:
+
+- **Finding #2's tool-schema/response-shape fixes**, done against `google.genai` (the CURRENT SDK
+  — `vertexai.generative_models`, which the original broken code used, turned out to already be
+  past its own documented deprecation-removal date; building new code against it would have been
+  wrong on day one, found by actually importing it and reading the warning).
+- **A real, third bug beyond the original two**: the system prompt (always a list of blocks in
+  real calls, e.g. `orchestrator/executive.py`'s `system=system_blocks`) was being silently dropped
+  because the first fix pass only handled a bare string — found by checking real call sites, not
+  assumed correct once the obvious cases worked.
+- **Round 1 adversarial review found a CRITICAL authorization gap** the original scoping pass
+  didn't anticipate: a valid IDUNA *signature* was being treated as sufficient authorization, but
+  IDUNA's ES256 key also signs low-trust principals (public guest game accounts verified directly
+  in `IDUNA/internal/http/handlers/game_online.go`) with the SAME audience every M2M agent token
+  carries — so a self-registered guest account could have called this entire API. Fixed by
+  requiring an `openexec.*`-prefixed permission claim (what `POST /api/v1/openexecutive/provision`
+  actually grants), not just a valid signature.
+- **Round 1 also found a second correctness bug in the Gemini fix**: `tool_result` blocks were
+  keyed by Anthropic's opaque `tool_use_id` instead of the real function name Gemini needs to
+  correlate a response to its call — every multi-turn tool conversation would have silently broken.
+  Fixed via an id→name map threaded through the whole message list.
+- Plus: duplicate tool-call ids across turns, `exp` claim not required, a `type: None` crash, plain-
+  HTTP JWKS fetch permitted, unbounded stale-JWKS serving, JWKS-fetch amplification with no lock
+  or cooldown, a non-ASCII `x-api-key` 500, dead/misleadingly-named code (`IDUNAAuthMiddleware`,
+  never wired to anything), nondeterministic Council-dropdown ordering, and doc gaps
+  (`architecture/prebuilt/caching.json`, `.env.example`'s Gemini-only deployment guidance).
+- **Round 2 (security + logic reviewers, re-checking their own round-1 findings against the
+  fixes) found MORE real issues — including a regression the round-1 fix itself introduced.**
+  Security: the amplification-cooldown fix only covered `force=True`, leaving the ordinary
+  (non-forced) fetch path — the one every request actually hits first — with no cooldown at all
+  during an IDUNA outage (a real retry-storm risk); the `openexec.*` permission check is
+  all-or-nothing (`openexec.read` gets the same full access as `openexec.admin`, contradicting
+  IDUNA's own documented read/admin scope split); the httpx client was never closed on shutdown;
+  the new `IDUNA_EXPECTED_AUDIENCE`/`IDUNA_REQUIRED_PERMISSION_PREFIX` settings were undocumented.
+  Logic: **the cooldown-universalization fix from the security round-2 pass regressed the
+  staleness ceiling** — the cooldown short-circuit returned a stale-past-ceiling cache
+  unconditionally, silently defeating "must fail closed during a sustained outage"; **the stated
+  premise for the tool-result fix was factually wrong** — `FunctionCall`/`FunctionResponse` both
+  carry a real `id` field for correlation (verified directly against the installed SDK), so
+  name-only correlation breaks this codebase's own designed *parallel* tool-fan-out pattern
+  (two same-name calls in one turn); thinking tokens (a separate, unavoidable-on-2.5-Pro billed
+  field) were dropped from `output_tokens`, undercounting real cost 10-50x in testing; a truncated
+  function call reported `stop_reason="tool_use"` instead of `"max_tokens"`; a non-ASCII shared
+  secret compared against the wrong byte encoding (UTF-8 vs. the latin-1 Starlette/h11 actually
+  decode headers as); re-raising the same cached exception object grew its traceback unboundedly;
+  `google-genai` was only present transitively; the docs' own "additional… never a replacement"
+  language for IDUNA auth was inaccurate — the real gate is an OR, and an IDUNA-only deployment
+  with no shared secret at all is an intentional, real deployment shape, not an oversight.
+  **All of the above are now fixed and covered by new, real tests** (8 additional regression tests:
+  the exact stale-cache-inside-cooldown scenario, the exact parallel-same-name-tool-call scenario,
+  thinking-token accounting, MAX_TOKENS-vs-tool_use priority, no-candidates usage reporting).
+
+Real, honest, still-deferred (named, not silently dropped): real token-level Gemini streaming
+(the wrapper runs a correct non-streaming call and re-chunks it — still true, unchanged from Phase
+A's own scoping); Gemini gets no `tool_choice`/`thinking`-config/per-call `timeout` translation
+(round-2's own F5 — the `FeatureSpec`/feature-gate system OpenRouter and local models both go
+through has no Gemini equivalent yet); per-route/per-scope authorization for `openexec.read` vs.
+`openexec.admin` (a genuinely larger change — auditing every route in `api/routes/` for a
+read/write classification — named rather than rushed; `request.state.iduna_claims` is already
+threaded through for when this lands); `core/auth/`'s own architecture-doc registration (kept as a
+plain namespace package, deliberately, rather than adding `__init__.py` and triggering this repo's
+own "new top-level module needs a SectionSpec + page.tsx entry + prebuilt json" requirement for
+what is a narrow, internal auth mechanism, not a user-facing feature domain); Corporate Service
+Call-style automatic Anthropic-Gemini fallback (open decision #13 above, unchanged); the stray
+`iduna.db` cleanup and upstream-tracking decision (Phase D, unchanged); real eval scenarios per
+this repo's own PR bar (none added — no new specialist agent or prompt changed, so the existing
+gate doesn't require them, but a live end-to-end boot test against real GCP/IDUNA credentials still
+hasn't happened in this sandbox, which has neither).

@@ -349,6 +349,15 @@ the app refuses to start.
 | `LOCAL_API_KEY` | No | — | Optional bearer token (vLLM / gateways); Ollama & LM Studio need none |
 | `LOCAL_MODELS` | No | — | Comma-separated local model slugs to surface in the Council UI and route locally, e.g. `llama3.3,qwen2.5` |
 | `LOCAL_TIMEOUT_S` | No | `300` | Per-call timeout for local generation, in seconds |
+| `GEMINI_ENABLED` | No | `false` | Route Claude calls to Google Gemini via Vertex AI (native `google.genai` path, not OpenRouter's Gemini catalog entries). Uses Application Default Credentials — no API key setting |
+| `GCP_PROJECT_ID` | No | — | Required when `GEMINI_ENABLED=true` |
+| `GCP_LOCATION` | No | `us-central1` | Vertex AI region |
+| `GEMINI_DEFAULT_MODEL` | No | `gemini-2.5-pro` | Model surfaced in the Council UI when Gemini is enabled |
+| `GEMINI_REASONING_MODEL` | No | `gemini-2.5-pro` | Deep-reasoning-tier Gemini model |
+| `IDUNA_URL` | No | — | EINHORN_INDUSTRIAL IDUNA base URL (`https://` required unless the host is loopback). When set, an IDUNA-issued JWT (`Authorization: Bearer`, ES256/EC, verified against `<IDUNA_URL>/.well-known/jwks.json`) is accepted as an alternative credential on the same gate `BACKEND_SHARED_SECRET` guards — either one alone satisfies it, so a deployment can run on IDUNA alone with no shared secret set |
+| `IDUNA_EXPECTED_AUDIENCE` | No | `farthq-ecosystem` | Required token `aud` claim — defense in depth, not the primary authorization control (see next row) |
+| `IDUNA_REQUIRED_PERMISSION_PREFIX` | No | `openexec.` | The real, load-bearing check: a valid IDUNA signature alone is not sufficient (IDUNA's shared key also signs low-trust principals like public guest game accounts), so a token must also carry a permission with this prefix. All-or-nothing today — `openexec.read` and `openexec.admin` are currently equivalent for this service |
+| `IDUNA_AGENT_NAME` / `IDUNA_AGENT_SECRET` | No | — | This deployment's own M2M identity, only needed if it calls out to other IDUNA-fronted services as an authenticated agent |
 | `HONCHO_ENABLED` | No | `false` | Per-person memory layer ([honcho.dev](https://honcho.dev)) — a peer card shared across all channels |
 | `HONCHO_API_KEY` | No | — | Required when `HONCHO_ENABLED=true` |
 | `HONCHO_BASE_URL` | No | — | Self-hosted Honcho endpoint |
@@ -358,8 +367,9 @@ the app refuses to start.
 See [.env.example](.env.example) for the full list.
 
 > ¹ `ANTHROPIC_API_KEY` is required only when you serve Claude models directly.
-> It can be omitted entirely if you run on local models (`LOCAL_MODELS_ENABLED`)
-> or route through OpenRouter (`OPENROUTER_ENABLED`).
+> It can be omitted entirely if you run on local models (`LOCAL_MODELS_ENABLED`),
+> route through OpenRouter (`OPENROUTER_ENABLED`), or run on Gemini via Vertex
+> AI (`GEMINI_ENABLED`).
 
 > ² The application default is on, but **[.env.example](.env.example) ships
 > `ENABLE_WEB_SEARCH=false`** so a fresh setup incurs no per-search charges —
