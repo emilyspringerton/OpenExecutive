@@ -1,0 +1,37 @@
+# /home/fatbaby/.config/systemd/user/openexecutive-ui.service
+#
+# OpenExecutive's Next.js UI (S506, 2026-09-21) -- the real public-facing surface, at
+# https://exec.okemily.com (nginx vhost: ops/nginx/exec-okemily.conf,
+# sudo-queue/87-exec-okemily-ui.sh). Its own auth (Auth.js/NextAuth + Google, src/middleware.ts)
+# gates every page -- not IDUNA's cookie session, a deliberate, separate credential (this app is
+# designed to be deployable standalone, without IDUNA, so it carries its own auth rather than
+# assuming an IDUNA front door always exists). Requires a real Google OAuth Web Application client
+# (AUTH_GOOGLE_ID/AUTH_GOOGLE_SECRET in .env.local) -- a genuine human-only Google Cloud Console
+# step this sandbox cannot complete on its own; the service runs and serves /signin without it,
+# but no one can actually sign in until it's set.
+#
+# Deploy:
+#   mkdir -p ~/.config/systemd/user
+#   cp ops/systemd/openexecutive-ui.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now openexecutive-ui.service
+#
+# Rebuild after any packages/ui source change: `npm run build` in packages/ui, then
+# `systemctl --user restart openexecutive-ui.service` (production `next start`, not `next dev` --
+# no hot reload).
+
+[Unit]
+Description=OpenExecutive Next.js UI
+After=network-online.target openexecutive-api.service
+Wants=openexecutive-api.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/fatbaby/OpenExecutive/packages/ui
+Environment=PORT=3000
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

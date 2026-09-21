@@ -1,0 +1,28 @@
+# /home/fatbaby/.config/systemd/user/openexecutive-api.service
+#
+# OpenExecutive's FastAPI backend (S506, 2026-09-21) -- the real chat/orchestrator API, gated by
+# BACKEND_SHARED_SECRET (checked by the UI's own server-side proxy route) and/or an IDUNA-issued
+# JWT (checked directly, for any other caller). Bound to 127.0.0.1 only -- the UI is the one real
+# public-facing surface; this is reached through it (BACKEND_BASE_URL in packages/ui/.env.local),
+# never proxied to the public internet directly.
+#
+# Deploy:
+#   mkdir -p ~/.config/systemd/user
+#   cp ops/systemd/openexecutive-api.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now openexecutive-api.service
+
+[Unit]
+Description=OpenExecutive FastAPI backend
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/fatbaby/OpenExecutive/packages/core
+EnvironmentFile=/home/fatbaby/OpenExecutive/.env
+ExecStart=/home/fatbaby/.local/bin/uv run uvicorn openexecutive.api.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
